@@ -21,6 +21,8 @@ type AuthService interface {
 	Refresh(ctx context.Context, refreshToken string) (usecase.LogInOutput, error)
 }
 
+var ErrInternal = status.Error(codes.Internal, "internal error")
+
 type AuthServiceServer struct {
 	svc AuthService
 
@@ -50,7 +52,7 @@ func (srv *AuthServiceServer) LogIn(ctx context.Context, req *authv1.LogInReques
 			)
 		}
 
-		return nil, err
+		return nil, ErrInternal
 	}
 
 	return &authv1.LogInResponse{
@@ -71,6 +73,8 @@ func (srv *AuthServiceServer) LogOut(ctx context.Context, request *authv1.LogOut
 				domain.ErrSessionNotFound.Error(),
 			)
 		}
+
+		return &emptypb.Empty{}, ErrInternal
 	}
 
 	return &emptypb.Empty{}, nil
@@ -82,8 +86,8 @@ func (srv *AuthServiceServer) SignUp(ctx context.Context, request *authv1.SignUp
 		srv.logger.Error("failed to parse id", "error", err)
 
 		return nil, status.Error(
-			codes.Internal,
-			"internal server error",
+			codes.InvalidArgument,
+			"failed to parse id",
 		)
 	}
 
@@ -103,7 +107,7 @@ func (srv *AuthServiceServer) SignUp(ctx context.Context, request *authv1.SignUp
 			)
 		}
 
-		return nil, err
+		return nil, ErrInternal
 	}
 
 	return &authv1.LogInResponse{
@@ -149,7 +153,7 @@ func (srv *AuthServiceServer) Refresh(ctx context.Context, request *authv1.Refre
 			)
 		}
 
-		return nil, err
+		return nil, ErrInternal
 	}
 
 	return &authv1.LogInResponse{
