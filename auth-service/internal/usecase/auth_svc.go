@@ -69,7 +69,7 @@ func (svc *AuthService) LogIn(ctx context.Context, in LogInInput) (LogInOutput, 
 		return LogInOutput{}, fmt.Errorf("verify password: %w", err)
 	}
 
-	return svc.logIn(ctx, user)
+	return logIn(ctx, user, svc.accessTokenTTL, svc.refreshTokenTTL, svc.sessionTTL, svc.tokens, svc.sessions)
 }
 
 func (svc *AuthService) LogOut(ctx context.Context, token string) error {
@@ -98,22 +98,43 @@ func (svc *AuthService) SignUp(ctx context.Context, in SignUpInput) (LogInOutput
 		return LogInOutput{}, fmt.Errorf("create user: %w", err)
 	}
 
-	if err := svc.users.Create(ctx, user); err != nil {
-		return LogInOutput{}, fmt.Errorf("save user: %w", err)
+	var out LogInOutput
+
+	if err := svc.tm.WithinTx(ctx, func(users UserRepository, sessions SessionRepository) error {
+		if err := users.Create(ctx, user); err != nil {
+			return fmt.Errorf("save user: %w", err)
+		}
+
+		out, err = logIn(ctx, user, svc.accessTokenTTL, svc.refreshTokenTTL, svc.sessionTTL, svc.tokens, sessions)
+		if err != nil {
+			return fmt.Errorf("log in: %w", err)
+		}
+
+		return nil
+	}); err != nil {
+		return LogInOutput{}, err
 	}
 
-	return svc.logIn(ctx, user)
+	return out, nil
 }
 
-func (svc *AuthService) logIn(ctx context.Context, user domain.User) (LogInOutput, error) {
-	accessTTL := min(svc.accessTokenTTL, svc.sessionTTL)
+func logIn(
+	ctx context.Context,
+	user domain.User,
+	accessTokenTTL,
+	refreshTokenTTL,
+	sessionTTL time.Duration,
+	tokens TokenIssuer,
+	sessions SessionRepository,
+) (LogInOutput, error) {
+	accessTTL := min(accessTokenTTL, sessionTTL)
 
-	access, err := svc.tokens.Issue(AccessTokenClaims{ID: user.ID.String()}, accessTTL)
+	access, err := tokens.Issue(AccessTokenClaims{ID: user.ID.String()}, accessTTL)
 	if err != nil {
 		return LogInOutput{}, fmt.Errorf("issue access token: %w", err)
 	}
 
-	refreshTTL := min(svc.refreshTokenTTL, svc.sessionTTL)
+	refreshTTL := min(refreshTokenTTL, sessionTTL)
 	now := time.Now()
 
 	refresh, refreshString, err := domain.NewRefreshToken(now.Add(refreshTTL))
@@ -121,12 +142,12 @@ func (svc *AuthService) logIn(ctx context.Context, user domain.User) (LogInOutpu
 		return LogInOutput{}, fmt.Errorf("create refresh token: %w", err)
 	}
 
-	session, err := domain.NewSession(user.ID, now.Add(svc.sessionTTL))
+	session, err := domain.NewSession(user.ID, now.Add(sessionTTL))
 	if err != nil {
 		return LogInOutput{}, fmt.Errorf("create session: %w", err)
 	}
 
-	if err := svc.sessions.Create(ctx, session, refresh); err != nil {
+	if err := sessions.Create(ctx, session, refresh); err != nil {
 		return LogInOutput{}, fmt.Errorf("save session: %w", err)
 	}
 
