@@ -1,0 +1,68 @@
+services:
+  auth-service:
+    build: ./auth-service
+    ports:
+      - "127.0.0.1:50051:50051"
+    depends_on:
+      auth-service-db-migrate:
+        condition: service_completed_successfully
+    environment:
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD_FILE: /run/secrets/db-password
+      DB_HOST: auth-service-db
+      DB_PORT: 5432
+      DB_OPTIONS: sslmode=disable
+      GRPC_ADDR: ":50051"
+      JWT_SECRET_FILE: /run/secrets/jwt-secret
+      ACCESS_TOKEN_TTL: 15m
+      REFRESH_TOKEN_TTL: 720h
+      SESSION_TTL: 2160h
+    secrets:
+      - db-password
+      - jwt-secret
+
+  auth-service-db:
+    image: postgres:18.6-alpine
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: pg_isready -h localhost -U ${DB_USER} -d ${DB_NAME}
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+      start_interval: 1s
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_PASSWORD_FILE: /run/secrets/db-password
+    secrets:
+      - db-password
+
+  auth-service-db-migrate:
+    image: migrate/migrate:4
+    depends_on:
+      auth-service-db:
+        condition: service_healthy
+    volumes:
+      - ./auth-service/migrations:/migrations
+    entrypoint:
+      - sh
+      - -c
+      - exec migrate -path /migrations -database "postgres://${DB_USER}:$$(cat /run/secrets/db-password)@auth-service-db:5432/${DB_NAME}?sslmode=disable" "$$@"
+      - migrate
+    command: ["up"]
+    secrets:
+      - db-password
+
+secrets:
+  db-password:
+    file: secrets/db_password
+  jwt-secret:
+    file: secrets/jwt_secret
+
+volumes:
+  pgdata:
