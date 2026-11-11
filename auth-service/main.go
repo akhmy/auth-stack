@@ -24,41 +24,43 @@ import (
 )
 
 func main() {
+	os.Exit(mainInner())
+}
+
+func mainInner() int {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	cfg, err := config.ParseEnv()
 	if err != nil {
 		logger.Error("failed to parse env", "error", err)
-		return
+		return 1
 	}
 
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
 		logger.Error("failed to listen", "error", err)
-		return
+		return 1
 	}
 
 	defer func() {
 		if err := lis.Close(); err != nil {
-			logger.Info("failed to close listener", "error", err)
+			logger.Error("failed to close listener", "error", err)
 		}
 	}()
 
 	jwtSecret, err := os.ReadFile(cfg.JWTSecretFile)
 	if err != nil {
 		logger.Error("failed to read JWT secret file", "error", err)
-		return
+		return 1
 	}
 
 	dbPasswordBytes, err := os.ReadFile(cfg.DB.PasswordFile)
 	if err != nil {
 		logger.Error("failed to read DB password file", "error", err)
-		return
+		return 1
 	}
 
-	poolCtx, poolCancel := context.WithTimeout(context.Background(), time.Second*5)
-	defer poolCancel()
-
+	poolCtx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	pool, err := pgxpool.New(
 		poolCtx,
 		pkgpgx.BuildConnString(
@@ -70,18 +72,24 @@ func main() {
 			cfg.DB.Options...,
 		),
 	)
+
+	cancel()
+
 	if err != nil {
 		logger.Error("failed to connect to database", "error", err)
-		return
+		return 1
 	}
+
 	defer pool.Close()
 
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), time.Second*5)
-	defer pingCancel()
+	pingCtx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	err = pool.Ping(pingCtx)
 
-	if err := pool.Ping(pingCtx); err != nil {
+	cancel()
+
+	if err != nil {
 		logger.Error("failed to ping database", "error", err)
-		return
+		return 1
 	}
 
 	q := sqlc.New(pool)
@@ -111,8 +119,8 @@ func main() {
 
 	errCh := make(chan error, 1)
 
-	sigCtx, sigCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer sigCancel()
+	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	go func() {
 		errCh <- srv.Serve(lis)
@@ -122,7 +130,7 @@ func main() {
 	case err := <-errCh:
 		if err != nil {
 			logger.Error("server error", "error", err)
-			return
+			return 1
 		}
 	case <-sigCtx.Done():
 		logger.Info("shutting down server")
@@ -134,10 +142,13 @@ func main() {
 
 		if pkggrpc.GracefulStop(shutdownCtx, srv) {
 			logger.Info("server stopped gracefully")
-		} else {
-			logger.Info("server stopped unexpectedly")
+			return 0
 		}
 
-		return
+		logger.Info("server stopped unexpectedly")
+
+		return 1
 	}
+
+	return 0
 }
